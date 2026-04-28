@@ -4,12 +4,20 @@
 
 #include <json11.hpp>
 
+#include <utility>
+#include <vector>
+
+#include <QDockWidget>
+#include <QEvent>
+#include <QPointer>
 #include <QTimer>
 
 class TwitchAuth : public OAuthStreamKey {
 	Q_OBJECT
-
 	bool uiLoaded = false;
+	bool deferredDockVisibilityRestore = false;
+	bool eventFilterInstalled = false;
+	std::vector<std::pair<QPointer<QDockWidget>, bool>> deferredDocks;
 
 	std::string name;
 	std::string uuid;
@@ -23,6 +31,12 @@ class TwitchAuth : public OAuthStreamKey {
 	bool GetChannelInfo();
 
 	virtual void LoadUI() override;
+	bool eventFilter(QObject *obj, QEvent *event) override;
+	void DeferDockVisibility(QDockWidget *dock);
+	void HideDeferredDocks();
+	void InstallDockVisibilityRestore();
+	void RestoreDeferredDockVisibility();
+	bool ShouldHideTwitchDocksOnStartup();
 
 public:
 	TwitchAuth(const Def &d);

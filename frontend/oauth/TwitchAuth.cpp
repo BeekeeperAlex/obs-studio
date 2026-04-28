@@ -10,6 +10,7 @@
 #include <ui-config.h>
 
 #include <QUuid>
+#include <QSystemTrayIcon>
 
 #include "moc_TwitchAuth.cpp"
 
@@ -52,11 +53,85 @@ TwitchAuth::~TwitchAuth()
 		return;
 
 	OBSBasic *main = OBSBasic::Get();
+	if (eventFilterInstalled)
+		main->removeEventFilter(this);
 
 	main->RemoveDockWidget(TWITCH_CHAT_DOCK_NAME);
 	main->RemoveDockWidget(TWITCH_INFO_DOCK_NAME);
 	main->RemoveDockWidget(TWITCH_STATS_DOCK_NAME);
 	main->RemoveDockWidget(TWITCH_FEED_DOCK_NAME);
+}
+
+bool TwitchAuth::ShouldHideTwitchDocksOnStartup()
+{
+	OBSBasic *main = OBSBasic::Get();
+	bool sysTrayEnabled = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SysTrayEnabled");
+
+	return QSystemTrayIcon::isSystemTrayAvailable() && !main->isVisible() && sysTrayEnabled;
+}
+
+void TwitchAuth::InstallDockVisibilityRestore()
+{
+	if (eventFilterInstalled)
+		return;
+
+	OBSBasic::Get()->installEventFilter(this);
+	eventFilterInstalled = true;
+}
+
+void TwitchAuth::DeferDockVisibility(QDockWidget *dock)
+{
+	if (!dock)
+		return;
+
+	for (auto &deferredDock : deferredDocks) {
+		if (deferredDock.first == dock) {
+			dock->setVisible(false);
+			return;
+		}
+	}
+
+	deferredDocks.emplace_back(dock, dock->isVisible());
+	dock->setVisible(false);
+	deferredDockVisibilityRestore = true;
+	InstallDockVisibilityRestore();
+}
+
+void TwitchAuth::HideDeferredDocks()
+{
+	for (auto &deferredDock : deferredDocks) {
+		if (deferredDock.first)
+			deferredDock.first->setVisible(false);
+	}
+}
+
+void TwitchAuth::RestoreDeferredDockVisibility()
+{
+	if (!deferredDockVisibilityRestore)
+		return;
+
+	for (auto &deferredDock : deferredDocks) {
+		if (deferredDock.first)
+			deferredDock.first->setVisible(deferredDock.second);
+	}
+
+	deferredDockVisibilityRestore = false;
+	deferredDocks.clear();
+
+	if (eventFilterInstalled) {
+		OBSBasic::Get()->removeEventFilter(this);
+		eventFilterInstalled = false;
+	}
+}
+
+bool TwitchAuth::eventFilter(QObject *obj, QEvent *event)
+{
+	if (!deferredDockVisibilityRestore || event->type() != QEvent::Show || obj != OBSBasic::Get())
+		return QObject::eventFilter(obj, event);
+
+	RestoreDeferredDockVisibility();
+
+	return QObject::eventFilter(obj, event);
 }
 
 bool TwitchAuth::MakeApiRequest(const char *path, Json &json_out)
@@ -276,6 +351,10 @@ void TwitchAuth::LoadUI()
 		main->restoreState(dockState);
 	}
 
+	if (ShouldHideTwitchDocksOnStartup()) {
+		DeferDockVisibility(chat);
+	}
+
 	TryLoadSecondaryUIPanes();
 
 	uiLoaded = true;
@@ -396,8 +475,16 @@ void TwitchAuth::LoadSecondaryUIPanes()
 		const char *dockStateStr = config_get_string(main->Config(), service(), "DockState");
 		QByteArray dockState = QByteArray::fromBase64(QByteArray(dockStateStr));
 
-		if (main->isVisible() || !main->isMaximized())
+		if (ShouldHideTwitchDocksOnStartup() || main->isVisible() || !main->isMaximized())
 			main->restoreState(dockState);
+	}
+
+	if (ShouldHideTwitchDocksOnStartup()) {
+		DeferDockVisibility(main->findChild<QDockWidget *>(TWITCH_CHAT_DOCK_NAME));
+		HideDeferredDocks();
+		DeferDockVisibility(info);
+		DeferDockVisibility(stats);
+		DeferDockVisibility(feed);
 	}
 }
 
